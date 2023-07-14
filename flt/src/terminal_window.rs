@@ -1,10 +1,13 @@
-//! This should be the only file in this crate which depends on [crossterm]
-//! functionality beyond the data classes.
+/*!
+This should be the only file in this crate which depends on [crossterm]
+functionality beyond the data classes.
+*/
 
+use base64::{encode_config, STANDARD};
 use crate::event::PlatformEvent;
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{read, DisableMouseCapture, EnableMouseCapture, Event};
-use crossterm::style::{Color, Print, PrintStyledContent, Stylize};
+use crossterm::style::{Color, Print};
 use crossterm::terminal::{
     self, disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
     LeaveAlternateScreen,
@@ -13,11 +16,12 @@ use crossterm::{ErrorKind, ExecutableCommand, QueueableCommand};
 use flutter_sys::Pixel;
 use std::collections::{HashMap, VecDeque};
 use std::io::{stdout, Stdout, Write};
-use std::iter::zip;
+
 use std::ops::Add;
 use std::sync::mpsc::Sender;
 use std::thread;
-use std::time::Instant;
+
+
 
 /// Lines to reserve the terminal for logging.
 const LOGGING_WINDOW_HEIGHT: usize = 4;
@@ -115,190 +119,57 @@ impl TerminalWindow {
         self.semantics = label_positions.into_iter().collect();
     }
 
-    pub(crate) fn draw(
-        &mut self,
-        pixel_grid: Vec<Vec<Pixel>>,
-        (x_offset, y_offset): (isize, isize),
-    ) -> Result<(), ErrorKind> {
-        // TODO(jiahaog): Stub out stdout instead so more things actually happen.
-        if self.simple_output {
-            return Ok(());
-        }
 
-        if self.showing_help {
-            return Ok(());
-        }
 
-        let start_instant = Instant::now();
-
-        // TODO(jiahaog): Enable this assertion. This breaks when zooming out.
-        // assert_eq!(pixel_grid.len() % 2, 0, "Drawn pixels should always be a multiple of two as the terminal height is multiplied by two before being provided to flutter.");
-
-        // TODO(jiahaog): This implementation is horrible and should be rewritten.
-
-        let grid_with_semantics: Vec<Vec<(Pixel, Option<String>)>> = pixel_grid
-            .into_iter()
-            .enumerate()
-            .map(|(y, row)| {
-                row.into_iter()
-                    .enumerate()
-                    .map(|(x, pixel)| (pixel, self.semantics.get(&(x, y)).cloned()))
-                    .collect()
-            })
-            .collect();
-
-        let (pixel_width, pixel_height) = self.size();
-
-        let grid_for_terminal: Vec<Vec<(Pixel, Option<String>)>> = (0..pixel_height)
-            .map(|y| {
-                let y = y_offset + y as isize;
-                if y < 0 || y >= grid_with_semantics.len() as isize {
-                    return vec![(Pixel::zero(), None); pixel_width];
-                }
-
-                let y = y as usize;
-
-                (0..pixel_width)
-                    .map(|x| {
-                        let x = x_offset + x as isize;
-
-                        if x < 0 || x >= grid_with_semantics.first().unwrap().len() as isize {
-                            return (Pixel::zero(), None);
-                        }
-
-                        let x = x as usize;
-
-                        grid_with_semantics[y][x].clone()
-                    })
-                    .collect()
-            })
-            .collect();
-
-        assert!(grid_for_terminal.len() == pixel_height);
-        assert!(grid_for_terminal.first().unwrap().len() == pixel_width);
-
-        // Each element is one pixel, but when it is rendered to the terminal,
-        // two rows share one character, using the unicode BLOCK characters.
-        let lines = (0..grid_for_terminal.len())
-            .step_by(2)
-            .map(|y| {
-                // TODO(jiahaog): Avoid the borrow here.
-                let tops = &grid_for_terminal[y];
-                let bottoms = &grid_for_terminal[y + 1];
-
-                zip(tops, bottoms)
-                    .map(
-                        |((top_pixel, top_semantics), (bottom_pixel, bottom_semantics))| {
-                            // Find the semantic labels for the current cell.
-                            let semantics = match (top_semantics, bottom_semantics) {
-                                (None, None) => None,
-                                (None, right) => right.clone(),
-                                (left, None) => left.clone(),
-                                // Use the longest.
-                                (Some(left), Some(right)) => Some(if left.len() > right.len() {
-                                    left.clone()
-                                } else {
-                                    right.clone()
-                                }),
-                            };
-
-                            TerminalCell {
-                                top: to_color(&top_pixel),
-                                bottom: to_color(&bottom_pixel),
-                                semantics,
-                            }
-                        },
-                    )
-                    .collect::<Vec<TerminalCell>>()
-            })
-            .collect::<Vec<Vec<TerminalCell>>>();
-
-        // Refreshing the entire terminal (with the clear char) and outputting
-        // everything on every iteration is costly and causes the terminal to
-        // flicker.
-        //
-        // Instead, only "re-render" different characters, if it is different from
-        // the previous frame.
-
-        // Means that the screen dimensions has changed.
-        if self.lines.len() != lines.len() {
-            // As the next zip needs to be a zip_longest.
-            self.lines = vec![vec![]; lines.len()];
-        }
-
-        for (y, (prev, current)) in zip(&self.lines, &lines).enumerate() {
-            for (
-                x,
-                current_cell @ TerminalCell {
-                    top,
-                    bottom,
-                    semantics: _,
-                },
-            ) in current.into_iter().enumerate()
-            {
-                if prev
-                    .get(x)
-                    .filter(|prev_cell| prev_cell == &current_cell)
-                    .is_some()
-                {
-                    continue;
-                }
-                self.stdout.queue(MoveTo(x as u16, y as u16))?;
-                self.stdout.queue(PrintStyledContent(
-                    BLOCK_UPPER.to_string().with(*top).on(*bottom),
-                ))?;
-            }
-
-            // Second pass to put semantics over pixels.
-            for (
-                x,
-                TerminalCell {
-                    top: _,
-                    bottom: _,
-                    semantics,
-                },
-            ) in current.into_iter().enumerate()
-            {
-                if semantics.is_none() {
-                    continue;
-                }
-                self.stdout.queue(MoveTo(x as u16, y as u16))?;
-                // TODO(jiahaog): Reflow within bounding box, or otherwise truncate.
-                self.stdout.queue(Print(semantics.as_ref().unwrap()))?;
-            }
-        }
-
-        {
-            assert!(self.logs.len() <= LOGGING_WINDOW_HEIGHT);
-
-            let (_, terminal_height) = terminal::size()?;
-
-            for i in 0..LOGGING_WINDOW_HEIGHT {
-                let y = terminal_height as usize - LOGGING_WINDOW_HEIGHT + i;
-
-                self.stdout.queue(MoveTo(0, y as u16))?;
-                self.stdout
-                    .queue(Clear(crossterm::terminal::ClearType::CurrentLine))?;
-                if let Some(line) = self.logs.get(i) {
-                    self.stdout.queue(Print(line))?;
-                }
-            }
-
-            let draw_duration = Instant::now().duration_since(start_instant);
-
-            let hint_and_fps = format!("{HELP_HINT} [{}]", draw_duration.as_millis());
-            self.stdout.queue(MoveTo(
-                (pixel_width - hint_and_fps.len()) as u16,
-                (terminal_height - 1) as u16,
-            ))?;
-            self.stdout.queue(Print(hint_and_fps))?;
-        }
-
-        self.stdout.flush()?;
-        self.lines = lines;
-
-        Ok(())
+pub(crate) fn draw(
+    &mut self,
+    pixel_grid: Vec<Vec<Pixel>>,
+    (x_offset, y_offset): (isize, isize),
+) -> Result<(), ErrorKind> {
+    if self.simple_output {
+        return Ok(());
     }
+
+    if self.showing_help {
+        return Ok(());
+    }
+
+    let (pixel_width, pixel_height) = self.size();
+
+// Convert the pixel grid to RGB data
+let mut rgb_data = Vec::new();
+if pixel_grid.len() <= 0 {
+    return Ok(());
+}
+for y in 0..pixel_height {
+    for x in 0..pixel_width {
+        let pixel = &pixel_grid[y as usize][x as usize];
+        rgb_data.push(pixel.r);
+        rgb_data.push(pixel.g);
+        rgb_data.push(pixel.b);
+    }
+}
+
+    // Base64 encode the RGB data using the updated base64 crate
+    let encoded_data = encode_config(&rgb_data, STANDARD);
+
+
+    // Write the data to the terminal using the Kitty Graphics Protocol
+    let mut stdout = std::io::stdout();
+    write!(
+        stdout,
+        "\x1b_Ga=T,f=24,t=d,s={},v={},x={},y={};{}\x1b\\",
+        pixel_width,
+        pixel_height,
+        x_offset,
+        y_offset,
+        encoded_data
+    )?;
+
+    stdout.flush()?;
+
+   return Ok(())
+}
 
     pub(crate) fn log(&mut self, message: String) {
         if self.simple_output {
@@ -352,6 +223,7 @@ impl TerminalWindow {
     pub(crate) fn mark_dirty(&mut self) {
         self.lines.clear();
     }
+
 }
 
 #[derive(PartialEq, Eq, Clone)]
@@ -361,7 +233,6 @@ struct TerminalCell {
     semantics: Option<String>,
 }
 
-const BLOCK_UPPER: char = '▀';
 
 /// Translates from a "Internal" height to a "External" height.
 ///
