@@ -3,6 +3,7 @@ This should be the only file in this crate which depends on [crossterm]
 functionality beyond the data classes.
 */
 
+use std::time::Instant;
 use base64::{encode_config, STANDARD};
 use crate::event::PlatformEvent;
 use crossterm::cursor::{Hide, MoveTo, Show};
@@ -136,40 +137,106 @@ pub(crate) fn draw(
 
     let (pixel_width, pixel_height) = self.size();
 
-// Convert the pixel grid to RGB data
-let mut rgb_data = Vec::new();
-if pixel_grid.len() <= 0 {
-    return Ok(());
-}
-for y in 0..pixel_height {
-    for x in 0..pixel_width {
-        let pixel = &pixel_grid[y as usize][x as usize];
-        rgb_data.push(pixel.r);
-        rgb_data.push(pixel.g);
-        rgb_data.push(pixel.b);
+    // Convert the pixel grid to RGB data
+    let mut rgb_data = Vec::new();
+    if pixel_grid.len() <= 0 {
+        return Ok(());
     }
-}
+
+    let start_instant = Instant::now();
+
+    for y in 0..pixel_height {
+        for x in 0..pixel_width {
+            let pixel = &pixel_grid[y as usize][x as usize];
+            rgb_data.push(pixel.r);
+            rgb_data.push(pixel.g);
+            rgb_data.push(pixel.b);
+        }
+    }
 
     // Base64 encode the RGB data using the updated base64 crate
-    let encoded_data = encode_config(&rgb_data, STANDARD);
-
+    let mut encoded_data = encode_config(&rgb_data, STANDARD);
 
     // Write the data to the terminal using the Kitty Graphics Protocol
     let mut stdout = std::io::stdout();
-    write!(
-        stdout,
-        "\x1b_Ga=T,f=24,t=d,s={},v={},x={},y={};{}\x1b\\",
-        pixel_width,
-        pixel_height,
-        x_offset,
-        y_offset,
-        encoded_data
-    )?;
+
+
+                self.stdout.queue(MoveTo(0, 0))?;
+
+    let chunk_size = 4096;
+    while !encoded_data.is_empty() {
+        let is_last_chunk = encoded_data.len() <= chunk_size;
+        let chunk: String = if is_last_chunk {
+            encoded_data.drain(..).collect()
+        } else {
+            encoded_data.drain(..chunk_size).collect()
+        };
+
+        let m = if is_last_chunk { 0 } else { 1 };
+
+            stdout.queue(Print(format!(
+
+            "\x1b_Ga=T,f=24,t=d,s={},v={},x={},y={},m={};{}\x1b\\",
+            pixel_width,
+            pixel_height,
+            x_offset,
+            y_offset,
+            m,
+            chunk
+        )))?;
+        /*
+         *write!(
+         *    stdout.queue(Print(format!(
+         *        "\x1b_Gf=32,s={},v={},m={};{}\x1b\\",
+         *        pixel_width,
+         *        pixel_height,
+         *        m,
+         *        chunk
+         *    ))),
+         *    "\x1b_Ga=T,f=24,t=d,s={},v={},x={},y={},m={};{}\x1b\\",
+         *    pixel_width,
+         *    pixel_height,
+         *    x_offset,
+         *    y_offset,
+         *    m,
+         *    chunk
+         *)?;
+         */
+    }
+
+        {
+            assert!(self.logs.len() <= LOGGING_WINDOW_HEIGHT);
+
+            let (_, terminal_height) = terminal::size()?;
+
+            for i in 0..LOGGING_WINDOW_HEIGHT {
+                let y = terminal_height as usize - LOGGING_WINDOW_HEIGHT + i;
+
+                self.stdout.queue(MoveTo(0, y as u16))?;
+                self.stdout
+                    .queue(Clear(crossterm::terminal::ClearType::CurrentLine))?;
+                if let Some(line) = self.logs.get(i) {
+                    self.stdout.queue(Print(line))?;
+                }
+            }
+
+            let draw_duration = Instant::now().duration_since(start_instant);
+
+            let hint_and_fps = format!("{HELP_HINT} [{}]", draw_duration.as_millis());
+            self.stdout.queue(MoveTo(
+                (pixel_width - hint_and_fps.len()) as u16,
+                (terminal_height - 1) as u16,
+            ))?;
+            self.stdout.queue(Print(hint_and_fps))?;
+        }
+
 
     stdout.flush()?;
 
-   return Ok(())
+    return Ok(());
 }
+
+
 
     pub(crate) fn log(&mut self, message: String) {
         if self.simple_output {
