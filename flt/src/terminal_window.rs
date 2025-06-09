@@ -22,7 +22,9 @@ use std::ops::Add;
 use std::sync::mpsc::Sender;
 use std::thread;
 
+use std::os::unix::io::RawFd;
 
+extern crate libc;
 
 /// Lines to reserve the terminal for logging.
 const LOGGING_WINDOW_HEIGHT: usize = 4;
@@ -105,6 +107,35 @@ impl TerminalWindow {
         }
     }
 
+    // get the size of the kitty terminal window in pixels using ioctl
+    pub(crate) fn resolution(&self) -> (usize, usize) {
+
+    let mut winsize = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+
+  unsafe {
+        libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut winsize);
+    }
+
+   // substract the height of the logging window and convert to pixels
+   let y_resolution = (winsize.ws_row / winsize.ws_ypixel);
+   let y_without_logging = (winsize.ws_ypixel as usize) - ((LOGGING_WINDOW_HEIGHT as usize) * y_resolution as usize) as usize;
+
+
+
+
+    /*
+     *return (winsize.ws_xpixel as usize, y_without_logging as usize);
+     */
+   return (400, 400);
+
+    }
+
+
     pub(crate) fn size(&self) -> (usize, usize) {
         let (width, height) = terminal::size().unwrap();
         let (width, height) = (width as usize, height as usize);
@@ -135,7 +166,7 @@ pub(crate) fn draw(
         return Ok(());
     }
 
-    let (pixel_width, pixel_height) = self.size();
+
 
     // Convert the pixel grid to RGB data
     let mut rgb_data = Vec::new();
@@ -143,7 +174,10 @@ pub(crate) fn draw(
         return Ok(());
     }
 
-    let start_instant = Instant::now();
+let pixel_height = pixel_grid.len();
+let pixel_width = pixel_grid[0].len(); // Assuming all rows have the same length
+
+let start_instant = Instant::now();
 
     for y in 0..pixel_height {
         for x in 0..pixel_width {
@@ -157,10 +191,6 @@ pub(crate) fn draw(
     // Base64 encode the RGB data using the updated base64 crate
     let mut encoded_data = encode_config(&rgb_data, STANDARD);
 
-    // Write the data to the terminal using the Kitty Graphics Protocol
-    let mut stdout = std::io::stdout();
-
-
                 self.stdout.queue(MoveTo(0, 0))?;
 
     let chunk_size = 4096;
@@ -173,9 +203,7 @@ pub(crate) fn draw(
         };
 
         let m = if is_last_chunk { 0 } else { 1 };
-
-            stdout.queue(Print(format!(
-
+            self.stdout.queue(Print(format!(
             "\x1b_Ga=T,f=24,t=d,s={},v={},x={},y={},m={};{}\x1b\\",
             pixel_width,
             pixel_height,
@@ -204,34 +232,36 @@ pub(crate) fn draw(
          */
     }
 
-        {
-            assert!(self.logs.len() <= LOGGING_WINDOW_HEIGHT);
+/*
+ *        {
+ *            assert!(self.logs.len() <= LOGGING_WINDOW_HEIGHT);
+ *
+ *            let (_, terminal_height) = terminal::size()?;
+ *
+ *            for i in 0..LOGGING_WINDOW_HEIGHT {
+ *                let y = terminal_height as usize - LOGGING_WINDOW_HEIGHT + i;
+ *
+ *                self.stdout.queue(MoveTo(0, y as u16))?;
+ *                self.stdout
+ *                    .queue(Clear(crossterm::terminal::ClearType::CurrentLine))?;
+ *                if let Some(line) = self.logs.get(i) {
+ *                    self.stdout.queue(Print(line))?;
+ *                }
+ *            }
+ *
+ *            let draw_duration = Instant::now().duration_since(start_instant);
+ *
+ *            let hint_and_fps = format!("{HELP_HINT} [{}]", draw_duration.as_millis());
+ *            self.stdout.queue(MoveTo(
+ *                (pixel_width - hint_and_fps.len()) as u16,
+ *                (terminal_height - 1) as u16,
+ *            ))?;
+ *            self.stdout.queue(Print(hint_and_fps))?;
+ *        }
+ */
 
-            let (_, terminal_height) = terminal::size()?;
 
-            for i in 0..LOGGING_WINDOW_HEIGHT {
-                let y = terminal_height as usize - LOGGING_WINDOW_HEIGHT + i;
-
-                self.stdout.queue(MoveTo(0, y as u16))?;
-                self.stdout
-                    .queue(Clear(crossterm::terminal::ClearType::CurrentLine))?;
-                if let Some(line) = self.logs.get(i) {
-                    self.stdout.queue(Print(line))?;
-                }
-            }
-
-            let draw_duration = Instant::now().duration_since(start_instant);
-
-            let hint_and_fps = format!("{HELP_HINT} [{}]", draw_duration.as_millis());
-            self.stdout.queue(MoveTo(
-                (pixel_width - hint_and_fps.len()) as u16,
-                (terminal_height - 1) as u16,
-            ))?;
-            self.stdout.queue(Print(hint_and_fps))?;
-        }
-
-
-    stdout.flush()?;
+    self.stdout.flush()?;
 
     return Ok(());
 }

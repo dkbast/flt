@@ -123,7 +123,7 @@ impl TerminalEmbedder {
     }
 
     pub(crate) fn reset_viewport(&mut self) -> Result<(), Error> {
-        self.dimensions = self.terminal_window.size();
+        self.dimensions = self.terminal_window.resolution();
         self.zoom = 1.0;
         self.scale = 1.0;
         self.window_offset = (0, 0);

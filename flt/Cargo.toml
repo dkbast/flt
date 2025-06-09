@@ -10,3 +10,5 @@ clap = { version = "4.2.1", features = ["derive"] }
 crossterm = "0.26.1"
 flutter-sys = { path = "../flutter-sys" }
 base64 = "0.13"
+nix = "0.23.0"
+libc = "0.2.101"
